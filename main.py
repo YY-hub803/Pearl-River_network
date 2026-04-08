@@ -33,14 +33,14 @@ if torch.cuda.is_available():
 hyper_params = {
     "epoch_run": 150,
     "epoch_save": 10,
-    "hidden_size": 512,
-    'history_len': 120,
+    "hidden_size": 32,
+    'history_len': 14,
     "batch_size":128,
-    "num_layers" : 1,
+    "num_layers" : 2,
     "drop_rate": 0.3,
     "warmup_epochs":10,
     "base_lr":1e-4,
-    "BACKEND":"PG_STGNN", # select model    STGNNModel/ LSTMModel/GC_LSTM/PG_STGNN
+    "BACKEND":"STGNNModel", # select model    STGNNModel/ LSTMModel/GC_LSTM/PG_STGNN
     "lossFun":'RMSE'
 }
 
