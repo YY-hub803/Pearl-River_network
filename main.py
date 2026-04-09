@@ -35,22 +35,21 @@ hyper_params = {
     "epoch_save": 10,
     "hidden_size": 32,
     'history_len': 14,
-    "batch_size":128,
+    'pred_len':1,
+    "batch_size":32,
     "num_layers" : 2,
     "drop_rate": 0.3,
     "warmup_epochs":10,
-    "base_lr":1e-4,
-    "BACKEND":"STGNNModel", # select model    STGNNModel/ LSTMModel/GC_LSTM/PG_STGNN
-    "lossFun":'RMSE'
+    "base_lr":1e-3,
+    "BACKEND":"LSTMModel", # select model    STGNNModel/ LSTMModel/PhysicsSTGNN/AttPhysicsSTGNN
+    "lossFun":'MSE'
 }
 
 
 MODEL_FACTORY = {
-    "GC_LSTM": model.GC_LSTM,
     "LSTMModel": model.LSTMModel,
     "STGNNModel": model.STGNNModel,
-    "PG_STGNN":model.PG_STGNN,
-    "ATTPG_STGNN":model.ATTPG_STGNN
+    "PhysicsSTGNN":model.PhysicsSTGNN,
 }
 Loss_FACTORY = {
     "MSE": crit.MSELoss,
@@ -103,13 +102,16 @@ val_date_range = full_date_range[train_end:,]
 #------------------------------------- load data -----------------------------------------------------------------------
 print("------------------------ load path ------------------------------")
 dir_x = {
-    "x_pre": os.path.join(dir_input, 'input_xforce_prcp.csv'),
     "x_pet": os.path.join(dir_input, 'input_xforce_pet.csv'),
-    "x_solar":os.path.join(dir_input, 'input_xforce_solar.csv'),
     "x_temp": os.path.join(dir_input, 'input_xforce_temp.csv'),
-    "x_u": os.path.join(dir_input, 'input_xforce_u_wind.csv'),
-"   x_v": os.path.join(dir_input, 'input_xforce_v_wind.csv'),
     "x_vp": os.path.join(dir_input, 'input_xforce_vp.csv'),
+    "x_TEMP": os.path.join(dir_input, 'input_yobs_temp.csv'),
+    "x_tp": os.path.join(dir_input, 'input_yobs_Tp.csv'),
+    "x_tn": os.path.join(dir_input, 'input_yobs_TN.csv'),
+    "x_cod": os.path.join(dir_input, 'input_yobs_CODMn.csv'),
+    "x_do": os.path.join(dir_input, 'input_yobs_DO.csv'),
+    "x_pre": os.path.join(dir_input, 'input_xforce_prcp.csv'),
+
 }
 
 dir_c = {
@@ -119,7 +121,8 @@ dir_c = {
 dir_y = {
     # "Flux": os.path.join(dir_input, 'input_yobs_Flux.csv'),
     # "DIS": os.path.join(dir_input, 'input_yobs_Dis.csv'),
-    "TP": os.path.join(dir_input, 'input_yobs_Tp.csv')
+    "TP": os.path.join(dir_input, 'input_yobs_Tp.csv'),
+    "TN": os.path.join(dir_input, 'input_yobs_TN.csv')
 }
 
 edge_path = os.path.join(dir_input, 'edge_weight.csv')
@@ -178,9 +181,10 @@ print(f"  Val Data Shapes:   X{val_x.shape}, Y{val_y.shape}")
 
 print('  ------------------------loading edges_info ------------------------------')
 edge,weight = utils_G.edge_extract(edge_path,num_sites)
-if BACKEND in ("PG_STGNN","ATTPG_STGNN"):
-    Lag_Matrix_path = os.path.join(dir_input, 'Lag_Matrix.csv')
-    lag_matrix = pd.read_csv(Lag_Matrix_path, header=None)
+
+Lag_Matrix_path = os.path.join(dir_input, 'Lag_Matrix.csv')
+lag_matrix = pd.read_csv(Lag_Matrix_path, header=None).values
+max_lag = int(np.max(lag_matrix))
 
 print('  ------------------------loading sites_info ------------------------------')
 sites_ID= pd.read_csv(os.path.join(dir_input,"points_info.csv"))
@@ -188,22 +192,26 @@ coords = sites_ID.iloc[:,2:4].values
 print("------------------------ creating window ------------------------------")
 
 print("Train Set:")
-train_valid_indices = General_utils.get_valid_window_indices(train_y, hyper_params['history_len'])
+train_valid_indices = General_utils.get_valid_window_indices(train_y, hyper_params['history_len'],hyper_params['pred_len'])
 print("Val Set:")
-val_valid_indices = General_utils.get_valid_window_indices(val_y, hyper_params['history_len'])
+val_valid_indices = General_utils.get_valid_window_indices(val_y, hyper_params['history_len'],hyper_params['pred_len'])
 
 print('  ------------------------ DataLoader ------------------------------')
-Train = General_utils.prepare_dataloader(
+Train,A_list = General_utils.prepare_dataloader(
     train_x, train_y,
     train_valid_indices,
     hyper_params['history_len'],
+    hyper_params['pred_len'],
     hyper_params['batch_size'],
+    lag_matrix, max_lag,
     shuffle=True)
-Val = General_utils.prepare_dataloader(
+Val,_ = General_utils.prepare_dataloader(
     val_x, val_y,
     val_valid_indices,
     hyper_params['history_len'],
+    hyper_params['pred_len'],
     hyper_params['batch_size'],
+    lag_matrix, max_lag,
     shuffle=False)
 
 nx = train_x.shape[-1]
@@ -213,21 +221,24 @@ if BACKEND in ("LSTMModel"):
     model = MODEL_FACTORY[BACKEND](
         nx, ny,
         hyper_params['hidden_size'],
+        hyper_params['num_layers'],
         hyper_params['drop_rate']
     )
-elif BACKEND in ("STGNNModel","GC_LSTM"):
+elif BACKEND in ("STGNNModel"):
     model = MODEL_FACTORY[BACKEND](
         nx, ny,num_sites,edge,
         hyper_params['hidden_size'],
+        hyper_params['num_layers'],
         hyper_params['drop_rate'],
         device
     )
-elif BACKEND in ("PG_STGNN","ATTPG_STGNN"):
+elif BACKEND in ("PhysicsSTGNN"):
     model = MODEL_FACTORY[BACKEND](
         nx, ny,
         hyper_params['hidden_size'],
-        lag_matrix,
-        2,
+        hyper_params['num_layers'],
+        hyper_params['pred_len'],
+        hyper_params['drop_rate'],
     )
 else:
     raise ValueError(f"Unknown BACKEND type: {BACKEND}")
@@ -239,13 +250,12 @@ lossFun = Loss_FACTORY[hyper_params['lossFun']]()
 
 
 model_test = train.train_G(
-    model, coords,Train, Val,lossFun,
+    model,Train, Val,lossFun,
     hyper_params['epoch_run'],
     device,
     dir_output,
     hyper_params['warmup_epochs'],
-    hyper_params['base_lr'],
-    hyper_params['epoch_save']
+    hyper_params['base_lr']
 )
 
 model_files = glob.glob(os.path.join(dir_output, "*.pt"))
@@ -260,7 +270,7 @@ x_in = np.concatenate([train_x, val_x], axis=1)
 y_in = np.concatenate([train_y, val_y], axis=1)
 Target_Name = list(dir_y.keys())
 y_out, y_true = train.Interpolation(
-    model_raw, val_x, val_y,
+    model_raw, val_x, val_y,A_list,
     y_mean, y_std, sites_ID, dir_output, Target_Name,device,
     hyper_params['history_len'],hyper_params['batch_size']
 )
@@ -269,8 +279,7 @@ y_out, y_true = train.Interpolation(
 if 'y_out' in locals():
     print("------------------------ 生成可视化图表 ------------------------------")
     vis_mapping = {
-        "Flux": lambda: vis.vis_filled(y_true['Flux'], y_out['Flux'], val_date_range, vis_folder, "Flux"),
-        "DIS": lambda: vis.vis_filled(y_true['DIS'], y_out['DIS'], val_date_range, vis_folder, "DIS"),
+        "TN": lambda: vis.vis_filled(y_true['TN'], y_out['TN'], val_date_range, vis_folder, "TN"),
         "TP": lambda: vis.vis_filled(y_true['TP'], y_out['TP'], val_date_range, vis_folder, "TP")
     }
     for var_name, vis_func in vis_mapping.items():

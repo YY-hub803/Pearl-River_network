@@ -89,10 +89,8 @@ def vis_filled(obs_input, pred_input, full_date_range, save_floder,var_nm):
         shutil.rmtree(save_path, ignore_errors=True)
         os.makedirs(save_path, exist_ok=True)
 
-    if var_nm == "Flux":
-        y_label = "Flux (t/d)"
-    elif var_nm == "DIS":
-        y_label = "Dis (m3/d)"
+    if var_nm == "TN":
+        y_label = "Conc (mg/L)"
     elif var_nm == "TP":
         y_label = "Conc (mg/L)"
 
@@ -119,15 +117,12 @@ def vis_filled(obs_input, pred_input, full_date_range, save_floder,var_nm):
                 color='#d62728', linestyle='-', linewidth=1.2, alpha=0.8,
                 label='Model', zorder=1)
         # Layer 2: 绘制真实观测值 (空心圆点)
-        if var_nm == "DIS":
-            ax.plot(dates_valid, obs_valid,
-                       color='black', linestyle='--', linewidth=1.2, alpha=0.8,
-                       label='Observed Data', zorder=2)
-        else:
-            ax.scatter(dates_valid, obs_valid,
-                            facecolors='none', s=30, linewidth=1.5, edgecolors='darkblue', label='Observed Data', zorder=2)
+        ax.plot(dates_valid, obs_valid,
+                color='black', linestyle='--', linewidth=1.2, alpha=0.8,
+                label='Observed Data', zorder=2)
 
-        ax.set_title(f"Water Quality Imputation Results - Site: {siteid}", fontsize=14, fontweight='bold')
+
+        ax.set_title(f"Water Quality Pred Results - Site: {siteid}", fontsize=14, fontweight='bold')
         ax.set_ylabel(y_label, fontsize=12)
         ax.set_xlabel("Date", fontsize=12)
 

@@ -191,27 +191,20 @@ class WeightLoss(nn.Module):
         return total_loss
 
 def R2(output, target):
-    """
-    用mask操作标记缺失值，只计算有值的位置
-    :param output:[total_sample,1]
-    :param target:[total_sample,1]
-    :return:
-    """
-
-    mask = target == target
+    mask = ~np.isnan(target)
     p0 = output[mask]
     t0 = target[mask]
-    N = len(t0)
-    #计算分子部分
-    numerator = (N * np.sum(p0 * t0) - np.sum(p0) * np.sum(p0)) **2
 
-    #计算分母
-    denominator1 = (N * np.sum(t0**2) - (np.sum(t0))**2)
-    denominator2 = (N * np.sum(p0**2) - (np.sum(p0))**2)
-    denominator = denominator1*denominator2
+    if len(t0) == 0:
+        return np.nan
 
-    R2 = numerator / denominator
-    return R2
+    ss_res = np.sum((t0 - p0) ** 2)
+    ss_tot = np.sum((t0 - np.mean(t0)) ** 2)
+
+    if ss_tot == 0:
+        return np.nan
+
+    return 1 - ss_res / ss_tot
 
 def NSE(output, target):
 
@@ -259,6 +252,61 @@ def RMSE(output, target):
     t0 = target[mask]
     N = len(t0)
 
-    RMSE = np.sqrt(np.mean(t0 - p0)**2)
+    RMSE = np.sqrt(np.mean((t0 - p0)**2))
 
     return RMSE
+
+def FHV(sim, obs, h=0.02):
+    sim = np.array(sim)
+    obs = np.array(obs)
+
+    # 按观测值降序排序
+    idx = np.argsort(obs)[::-1]
+
+    n = int(len(obs) * h)
+    sim_high = sim[idx][:n]
+    obs_high = obs[idx][:n]
+
+    return 100 * np.sum(sim_high - obs_high) / np.sum(obs_high)
+
+
+def KGE(sim, obs):
+    """
+    Kling-Gupta Efficiency (KGE)
+
+    :param sim: 模拟值
+    :param obs: 观测值
+    :return: kge, r, alpha, beta
+    """
+
+    # 去掉 NaN
+    mask = ~np.isnan(obs)
+    sim = sim[mask]
+    obs = obs[mask]
+
+    if len(obs) == 0:
+        return np.nan, np.nan, np.nan, np.nan
+
+    # 均值
+    mean_sim = np.mean(sim)
+    mean_obs = np.mean(obs)
+
+    # 标准差
+    std_sim = np.std(sim, ddof=1)
+    std_obs = np.std(obs, ddof=1)
+
+    # 防止除零
+    if std_obs == 0 or mean_obs == 0:
+        return np.nan, np.nan, np.nan, np.nan
+
+    # 相关系数 r
+    r = np.corrcoef(sim, obs)[0, 1]
+
+    # α 和 β
+    alpha = std_sim / std_obs
+    beta = mean_sim / mean_obs
+
+    # KGE
+    kge = 1 - np.sqrt((r - 1)**2 + (alpha - 1)**2 + (beta - 1)**2)
+
+    return kge, r, alpha, beta

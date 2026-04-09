@@ -2,6 +2,7 @@ import torch
 import numpy as np
 import pandas as pd
 from torch.utils.data import Dataset, DataLoader
+from torch_geometric.utils import add_self_loops
 def load_timeseries(dict_data, chem_site, chem_length):
     """Load data from time-series inputs"""
     data_list = []
@@ -15,6 +16,11 @@ def load_attribute(dict_data):
     """Load data from constant attributes"""
     data_list = [np.loadtxt(path, delimiter=",", skiprows=1) for path in dict_data.values()]
     return np.concatenate(data_list, axis=1)
+
+def to_scalar(value):
+    if isinstance(value, (list, np.ndarray)):
+        return value[0]
+    return value
 
 
 def preprocess_dynamic_data(data, train_end, log_indices=None):
@@ -91,14 +97,32 @@ def Time_emb(full_date_range):
     date_processing['cos_doy'] = np.cos(2 * np.pi * day_of_year / days_in_year)
 
     # --- 3. 周内周期 (Weekly Periodicity) ---
-    # 建议：如果是纯农业流域，可以考虑注释掉这两行；如果是城市混合流域，可以保留
+
     day_of_week = date_processing.index.dayofweek
     date_processing['sin_dow'] = np.sin(2 * np.pi * day_of_week / 7)
     date_processing['cos_dow'] = np.cos(2 * np.pi * day_of_week / 7)
 
     return date_processing
 
-def get_valid_window_indices(Y, window_size, step=1):
+
+
+def edge_extract(path,num_sites):
+    edges_info = pd.read_csv(path)
+    edges_weight = torch.tensor(edges_info['weight'].to_numpy(),dtype=torch.float32)
+
+    edges_weight = torch.ones(edges_weight.shape, dtype=torch.float32)
+
+    edges_index = torch.tensor(edges_info.iloc[:,0:2].to_numpy(),dtype=torch.long).T
+    # 添加self_loop
+    edge_idx,edge_weight = add_self_loops(edges_index,
+                                        edges_weight,
+                                        fill_value=1.0,
+                                        num_nodes=num_sites)
+
+    return edge_idx,edge_weight
+
+
+def get_valid_window_indices(Y, window_size, pred_len,step=1):
     """
     步骤 1: 扫描全量数据，找出非全空样本的起始时间索引。
     输入 Y 形状: [N, T, F]
@@ -109,8 +133,7 @@ def get_valid_window_indices(Y, window_size, step=1):
     drop_count = 0
 
     for t in range(0, T - window_size + 1, step):
-        y_window = Y[:, t : t + window_size, :]
-        # 判断该截取窗口是否全为 NaN (对应您原代码的 is_all_missing)
+        y_window = Y[:, t + window_size : t + window_size + pred_len, :]
         if np.isnan(y_window).all():
             drop_count += 1
         else:
@@ -123,12 +146,25 @@ class SpatioTemporalDataset(Dataset):
     """
     步骤 2: 动态数据集。在获取每个 Batch 时，实时进行滑窗截取、Mask 生成和 NaN 填充。
     """
-    def __init__(self, X, Y, valid_indices, window_size):
+    def __init__(self, X, Y, valid_indices, window_size,pred_len,lag_matrix, max_lag):
         # 将原始完整序列转为 Tensor 以加速运算，形状保持为 [N, T, F]
         self.X = torch.FloatTensor(X)
         self.Y = torch.FloatTensor(Y)
         self.valid_indices = valid_indices
         self.window_size = window_size
+        self.pred_len = pred_len
+
+        self.A_tensor = self.build_a_list(torch.tensor(lag_matrix), max_lag)
+    def build_a_list(self,lag_matrix, max_lag):
+        A_list = []
+        for k in range(max_lag + 1):
+            # 转置：Target行，Source列
+            A_k = (lag_matrix == k).float().t()
+            if k == 0:
+                A_k.fill_diagonal_(1.0)
+            A_list.append(A_k)
+        # [max_lag + 1, N, N]
+        return torch.stack(A_list)
 
     def __len__(self):
         return len(self.valid_indices)
@@ -139,7 +175,7 @@ class SpatioTemporalDataset(Dataset):
 
         # 2. 动态滑窗截取 [N, H, F]
         x = self.X[:, t : t + self.window_size, :]
-        y = self.Y[:, t : t + self.window_size, :]
+        y = self.Y[:, t + self.window_size : t + self.window_size + self.pred_len, :]
 
         # 3. 生成 Mask (Mask = 1 表示有数据，Mask = 0 表示缺失)
         mask = ~torch.isnan(y)
@@ -148,13 +184,13 @@ class SpatioTemporalDataset(Dataset):
         # 4. 把 Y 里的 NaN 替换成 0
         y = torch.nan_to_num(y, nan=0.0)
 
-        return x, y, mask
+        return x, y, mask,self.A_tensor
 
-def prepare_dataloader(X, Y, valid_indices, window_size, batch_size=32, shuffle=True):
+def prepare_dataloader(X, Y, valid_indices, window_size,pred_len, batch_size,lag_matrix, max_lag, shuffle=True):
     """
     步骤 3: 封装生成 DataLoader
     """
-    dataset = SpatioTemporalDataset(X, Y, valid_indices, window_size)
-    # 建议开启 pin_memory=True，能加速数据从 CPU 向 GPU 的拷贝
+    dataset = SpatioTemporalDataset(X, Y, valid_indices, window_size,pred_len,lag_matrix, max_lag)
+    A_list = dataset.A_tensor
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, pin_memory=True)
-    return loader
+    return loader,A_list
