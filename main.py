@@ -41,7 +41,7 @@ hyper_params = {
     "drop_rate": 0.3,
     "warmup_epochs":10,
     "base_lr":1e-3,
-    "BACKEND":"PhysicsSTGNN", # select model    STGNNModel/ LSTMModel/PhysicsSTGNN/AttPhysicsSTGNN
+    "BACKEND":"LSTMModel", # select model    STGNNModel/ LSTMModel/PhysicsSTGNN/AttPhysicsSTGNN
     "lossFun":'RMSE'
 }
 
@@ -233,6 +233,7 @@ elif BACKEND in ("STGNNModel"):
         nx, ny,num_sites,edge,
         hyper_params['hidden_size'],
         hyper_params['num_layers'],
+        hyper_params['pred_len'],
         hyper_params['drop_rate'],
         device
     )
