@@ -34,15 +34,15 @@ hyper_params = {
     "epoch_run": 150,
     "epoch_save": 10,
     "hidden_size": 32,
-    'history_len': 14,
+    'history_len': 7,
     'pred_len':1,
     "batch_size":32,
     "num_layers" : 2,
     "drop_rate": 0.3,
     "warmup_epochs":10,
     "base_lr":1e-3,
-    "BACKEND":"LSTMModel", # select model    STGNNModel/ LSTMModel/PhysicsSTGNN/AttPhysicsSTGNN
-    "lossFun":'MSE'
+    "BACKEND":"PhysicsSTGNN", # select model    STGNNModel/ LSTMModel/PhysicsSTGNN/AttPhysicsSTGNN
+    "lossFun":'RMSE'
 }
 
 
@@ -75,7 +75,12 @@ dir_model = freq+'_' + "%s_H%d_L%d_dr%.2f_NL%d_E%d" % (
 dir_proj = f"data"
 work_path = os.getcwd()
 dir_input = os.path.join(work_path, dir_proj)
-dir_output = os.path.join("OutPut",dir_model)
+if hyper_params['pred_len'] == 1 :
+    dir_output = os.path.join("OutPut",dir_model)
+elif hyper_params['pred_len'] == 3 :
+    dir_output = os.path.join("Mutil_OutPut",dir_model)
+elif hyper_params['pred_len'] == 7 :
+    dir_output = os.path.join("Mutil7_OutPut",dir_model)
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -119,8 +124,6 @@ dir_c = {
 }
 
 dir_y = {
-    # "Flux": os.path.join(dir_input, 'input_yobs_Flux.csv'),
-    # "DIS": os.path.join(dir_input, 'input_yobs_Dis.csv'),
     "TP": os.path.join(dir_input, 'input_yobs_Tp.csv'),
     "TN": os.path.join(dir_input, 'input_yobs_TN.csv')
 }
@@ -222,6 +225,7 @@ if BACKEND in ("LSTMModel"):
         nx, ny,
         hyper_params['hidden_size'],
         hyper_params['num_layers'],
+        hyper_params['pred_len'],
         hyper_params['drop_rate']
     )
 elif BACKEND in ("STGNNModel"):
@@ -269,10 +273,10 @@ model_raw = torch.load(latest_model_path)
 x_in = np.concatenate([train_x, val_x], axis=1)
 y_in = np.concatenate([train_y, val_y], axis=1)
 Target_Name = list(dir_y.keys())
-y_out, y_true = train.Interpolation(
+y_out, y_true = train.Prediction(
     model_raw, val_x, val_y,A_list,
     y_mean, y_std, sites_ID, dir_output, Target_Name,device,
-    hyper_params['history_len'],hyper_params['batch_size']
+    hyper_params['history_len'],hyper_params['pred_len'],hyper_params['batch_size']
 )
 
 # ------------------------ 可视化部分 ------------------------------

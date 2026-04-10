@@ -11,7 +11,7 @@ class RMSELoss(nn.Module):
         """
         output: [B, N, T, F]
         target: [B, N, T, F]
-        mask:   [B, N, T, F] (1=有效, 0=缺失)
+        mask:   [B, N, T, F]
         """
 
         # 平方误差

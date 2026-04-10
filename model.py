@@ -22,71 +22,39 @@ class AttentionBlock(nn.Module):
     def forward(self, x):
         # x: [Batch, Seq_len, hidden_size]
         # Query, Key, Value 均来自输入 x
-        attn_out, _ = self.attention(x, x, x)
-        attn_out = self.dropout(attn_out)
+        B, N, T, nF = x.size()
+        h = x.reshape(B * N, T, -1)
+        attn_out, _ = self.attention(h, h, h)
+        attn_out = self.dropout(attn_out).reshape(B, N,T,-1)
 
         # 残差连接与层归一化
         return self.norm(x + attn_out)
 
 
-class TemporalAttention(nn.Module):
-    def __init__(self, input_size, output_size, pred_len, num_heads=4):
-        super().__init__()
-        self.feat_mlp = nn.Sequential(
-            nn.Linear(input_size, output_size * 2),
-            nn.ReLU(),
-            nn.Linear(output_size * 2, output_size)
-        )
-        # 1. 定义可学习的 Query 向量，形状为 [1, 目标时间步, 特征维度]
-        self.query_embed = nn.Parameter(torch.randn(1, pred_len, output_size))
-        # 2. 多头注意力机制
-        self.attention = nn.MultiheadAttention(
-            embed_dim=output_size,
-            num_heads=num_heads,
-            batch_first=True
-        )
-
-    def forward(self, x):
-        # h: [B,N, T, input_size]
-        B,N,T,nF = x.size()
-        h = x.reshape(B*N,T,-1)
-        # 1. 特征融合 (生成 Key 和 Value)
-        h_feat = self.feat_mlp(h)  # -> [B,N, T, output_size]
-        # 2. 扩展 Query 以匹配当前的 Batch Size
-        query = self.query_embed.repeat(B*N, 1, 1)  # -> [B*N, pred_len, output_size]
-        # 3. 注意力计算
-        # query 作为 Q，历史特征 h_feat 作为 K 和 V
-        attn_out, _ = self.attention(query, h_feat, h_feat)  # -> [B*N, pred_len, output_size]
-
-        return attn_out
-
 class LSTMModel(nn.Module):
-    def __init__(self, nx,ny,hidden_size,num_layer, drop_rate,num_heads=4):
+    def __init__(self, nx,ny,hidden_size,num_layer,pred_len, drop_rate):
         super().__init__()
         self.nx = nx
         self.ny = ny
         self.hidden_size=hidden_size
+        self.pred_len = pred_len
         self.drop = nn.Dropout(drop_rate)
         self.fc = nn.Linear(self.nx, self.hidden_size)
         self.lstm = nn.LSTM(self.hidden_size, self.hidden_size,num_layers=num_layer, batch_first=True, bidirectional=False)
-        self.attn_block = AttentionBlock(self.hidden_size, num_heads, drop_rate)
-
         self.mlp = nn.Sequential(
             nn.Linear(self.hidden_size, self.hidden_size),
             nn.ReLU(),
             self.drop,
-            nn.Linear(self.hidden_size, self.ny),
+            nn.Linear(self.hidden_size, self.pred_len*self.ny),
         )
     def forward(self, x):
-
         B, N, T, _ = x.shape
         x_reshaped = x.reshape(B * N, T, -1)
         x_in = F.relu(self.fc(x_reshaped))
-        lstm_out,_ = self.lstm(x_in)
-        attn_out = self.attn_block(lstm_out)
-        mlp_out = self.mlp(attn_out)
+        _,(lstm_out,_) = self.lstm(x_in)
+        mlp_out = self.mlp(lstm_out[-1:,:,:])
 
-        return mlp_out.reshape(B, N, T, self.ny)[:,:,-1:,:]
+        return mlp_out.reshape(B, N, self.pred_len, self.ny)
 
 
 class STGNNModel(nn.Module):
@@ -169,6 +137,11 @@ class PhysicsGuidedGCN(nn.Module):
         super(PhysicsGuidedGCN, self).__init__()
 
         self.W = nn.Linear(in_features, hidden_size)
+        self.lag_weights = nn.Sequential(
+            nn.Linear(1, 8),
+            nn.GELU(),
+            nn.Linear(8, 1)
+        )
 
     def forward(self, x,A_list):
         """
@@ -185,7 +158,6 @@ class PhysicsGuidedGCN(nn.Module):
 
         for lag in range(max_lag):
             norm_A_k = A_list[:,lag,:]
-
             # ==========================================
             # 核心1：构造多重滞后矩阵，实现上游t-1时刻的水流到下游t时刻
             if lag == 0:
@@ -194,12 +166,15 @@ class PhysicsGuidedGCN(nn.Module):
                 x_lagged = torch.roll(x_trans, shifts=lag, dims=1)
                 x_lagged[:, :lag, :, :] = 0.0
             # ==========================================
+            lag_tensor = torch.tensor([[float(lag)]], dtype=x_trans.dtype, device=x_trans.device)
+            dynamic_weight = self.lag_weights(lag_tensor)
             # 核心2：实现上游节点的水流汇到下游
             agg = torch.einsum('bij,btjf->btif', norm_A_k, x_lagged)
-            out_agg += agg
+            out_agg += agg * dynamic_weight
             # ==========================================
         # [B, N, T, F]
         out_final = out_agg.permute(0, 2, 1, 3)
+
         return F.gelu(self.W(out_final))
 
 
@@ -207,13 +182,57 @@ class TemporalModule(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers):
         super().__init__()
         self.lstm = nn.LSTM(input_size, hidden_size, num_layers=num_layers, batch_first=True)
-
     def forward(self, x):
         # x: [B,N,T,F]
         B, N, T, F = x.shape
-        x = x.reshape(B * N, T, F)
-        out, _ = self.lstm(x)
+        x_in = x.reshape(B * N, T, F)
+        out, _ = self.lstm(x_in)
         return out.reshape(B, N, T, -1)
+
+class TGN(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers):
+        super().__init__()
+        self.lstm = TemporalModule(hidden_size, hidden_size, num_layers)
+        self.gnn = PhysicsGuidedGCN(input_size, hidden_size)
+    def forward(self, x, A_list):
+        gnn_out = self.gnn(x, A_list)
+        lstm_out = self.lstm(gnn_out)
+        return lstm_out
+
+class TransformerPredictor(nn.Module):
+    def __init__(self, input_size, hidden_size, pred_len, nhead=4, num_layers=1):
+        super().__init__()
+        self.pred_len = pred_len
+        self.input_proj = nn.Linear(input_size, hidden_size)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_size,
+            nhead=nhead,
+            batch_first=True,
+            dim_feedforward=hidden_size * 4,
+            activation="gelu"
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        # learnable queries（关键）
+        self.query = nn.Parameter(torch.randn(pred_len, hidden_size))
+
+        self.decoder = nn.MultiheadAttention(hidden_size, nhead, batch_first=True)
+
+        self.out = nn.Linear(hidden_size, hidden_size)
+
+    def forward(self, x):
+        B, N, T, F = x.shape
+        x_view = x.reshape(B * N, T, F)
+        h = self.input_proj(x_view)
+        memory = self.encoder(h)
+
+        # 扩展 query
+        query = self.query.unsqueeze(0).repeat(B * N, 1, 1)
+
+        out, _ = self.decoder(query, memory, memory)
+
+        out = self.out(out)
+        return out.reshape(B, N, self.pred_len, -1)
+
 
 class PhysicsSTGNN(nn.Module):
     def __init__(self, nx,ny,  hidden_size,num_layer,pred_len, drop_rate):
@@ -223,11 +242,11 @@ class PhysicsSTGNN(nn.Module):
         self.hidden_size = hidden_size
         self.drop = nn.Dropout(drop_rate)
         self.pred_len = pred_len
-        self.lstm = TemporalModule(self.nx-46 , self.hidden_size,num_layers=num_layer)
-        self.gnn1 = PhysicsGuidedGCN(self.nx-4, self.hidden_size)
-        self.gnn2 = PhysicsGuidedGCN(self.hidden_size, self.hidden_size)
-        self.att = TemporalAttention(self.hidden_size*2,self.hidden_size,self.pred_len,num_heads=4)
-
+        self.lstm = TemporalModule(self.nx , self.hidden_size,num_layers=num_layer)
+        self.tgn1 = TGN(self.nx, self.hidden_size,num_layer)
+        self.tgn2 = TGN(self.hidden_size, self.hidden_size,num_layer)
+        self.att = AttentionBlock(self.hidden_size*2,4,drop_rate)
+        self.predictor = TransformerPredictor(self.hidden_size*2,self.hidden_size,self.pred_len)
         self.mlp = nn.Sequential(
             nn.Linear(self.hidden_size, self.hidden_size),
             nn.ReLU(),
@@ -237,17 +256,18 @@ class PhysicsSTGNN(nn.Module):
     def forward(self, x,A_list):
         # x: [B, N, T, F]
         B, N, T, nF = x.shape
-        # x_lstm[BNT,6],,,x_gcn[BNT,]
-        x_lstm = x[:,:,:,0:8]
-        x_gcn = x[:,:,:,4:]
+        # 只针对可流动的特征进行图卷积，气象数据+静态属性不参与
         # gnn_out ---> [B,N,T,H]
-        gnn_out1 = self.gnn1(x_gcn,A_list)
-        gnn_out2 = self.gnn2(gnn_out1,A_list)
-        lstm_out = self.lstm(x_lstm)  # lstm_out----> [B,N,T,H]
+        # 空间特征提取
+        gnn_out1 = self.tgn1(x,A_list)
+        gnn_out2 = self.tgn2(gnn_out1,A_list)
+        # 时间特征提取
+        lstm_out = self.lstm(x)  # lstm_out----> [B,N,T,H]
         h = torch.cat((lstm_out,gnn_out2),dim=-1) # h  ---> [B,N,T,H*2]
         att_out = self.att(h)
-        out = self.mlp(att_out)
-        return out.reshape(B, N,self.pred_len, -1)
+        pred = self.predictor(att_out)
+        out = self.mlp(pred)
+        return out
 
 
 

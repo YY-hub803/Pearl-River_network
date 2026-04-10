@@ -132,7 +132,7 @@ def get_valid_window_indices(Y, window_size, pred_len,step=1):
     valid_indices = []
     drop_count = 0
 
-    for t in range(0, T - window_size + 1, step):
+    for t in range(0, T - window_size - pred_len + 1, step):
         y_window = Y[:, t + window_size : t + window_size + pred_len, :]
         if np.isnan(y_window).all():
             drop_count += 1
@@ -177,6 +177,8 @@ class SpatioTemporalDataset(Dataset):
         x = self.X[:, t : t + self.window_size, :]
         y = self.Y[:, t + self.window_size : t + self.window_size + self.pred_len, :]
 
+        if x.shape[1] != self.window_size or y.shape[1] != self.pred_len:
+            raise ValueError(f"Bad sample at idx={idx}, x={x.shape}, y={y.shape}")
         # 3. 生成 Mask (Mask = 1 表示有数据，Mask = 0 表示缺失)
         mask = ~torch.isnan(y)
         mask = mask.float()
