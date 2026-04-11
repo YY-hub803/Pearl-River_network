@@ -89,10 +89,7 @@ def vis_filled(obs_input, pred_input, full_date_range, save_floder,var_nm):
         shutil.rmtree(save_path, ignore_errors=True)
         os.makedirs(save_path, exist_ok=True)
 
-    if var_nm == "TN":
-        y_label = "Conc (mg/L)"
-    elif var_nm == "TP":
-        y_label = "Conc (mg/L)"
+    y_label = "Conc (mg/L)"
 
     # 确保时间轴是 datetime 格式 (防止绘图报错)
     full_date_range = pd.to_datetime(full_date_range)

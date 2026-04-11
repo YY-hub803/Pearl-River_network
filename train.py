@@ -25,8 +25,6 @@ def train_G(model, Train,Val, criterion, num_epochs, device,saveFolder,warmup_ep
     model = model.to(device)
     criterion = criterion.to(device)
     optim = torch.optim.AdamW(model.parameters(),lr=base_lr, weight_decay=1e-5)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim,mode='min',  factor=0.5, patience=5,verbose=True,min_lr=1e-6)
-
     scaler = GradScaler(enabled=(device.type == 'cuda'))
 
     model_name = model.__class__.__name__
@@ -51,12 +49,6 @@ def train_G(model, Train,Val, criterion, num_epochs, device,saveFolder,warmup_ep
     for epoch in range(1,num_epochs+1):
 
         t0 = time.time()
-        # ======== Warmup 调整学习率 ========
-        if epoch < warmup_epochs:
-            warmup_lr = base_lr * (epoch + 1) / warmup_epochs
-            for param_group in optim.param_groups:
-                param_group['lr'] = warmup_lr
-
 
         model.train()
         total_train_loss = 0
@@ -82,7 +74,6 @@ def train_G(model, Train,Val, criterion, num_epochs, device,saveFolder,warmup_ep
             scaler.update()
 
             total_train_loss += loss.item()
-
 
         avg_train_loss = total_train_loss / len(Train)
 
@@ -111,24 +102,22 @@ def train_G(model, Train,Val, criterion, num_epochs, device,saveFolder,warmup_ep
             pltRMSE_train.append([epoch, avg_train_loss])
             pltRMSE_val.append([epoch, avg_val_loss])
 
-            if epoch >= warmup_epochs:
-                scheduler.step(avg_val_loss)
-                if avg_val_loss < best_val_loss - min_delta:
-                    best_val_loss = avg_val_loss
-                    early_stop_counter = 0
 
-                    # 可选：保存最优模型
-                    if saveFolder is not None:
-                        modelFile = os.path.join(saveFolder, 'best_model.pt')
-                        torch.save(model, modelFile)
-                        print(f"    >>> [New Best] Saved model_best.pt (Loss: {best_val_loss:.4f})")
-                else:
-                    early_stop_counter += 1
-                    print(f"EarlyStopping counter: {early_stop_counter}/{early_stop_patience}")
+            if avg_val_loss < best_val_loss - min_delta:
+                best_val_loss = avg_val_loss
+                early_stop_counter = 0
+                # 可选：保存最优模型
+                if saveFolder is not None:
+                    modelFile = os.path.join(saveFolder, 'best_model.pt')
+                    torch.save(model, modelFile)
+                    print(f"    >>> [New Best] Saved model_best.pt (Loss: {best_val_loss:.4f})")
+            else:
+                early_stop_counter += 1
+                print(f"EarlyStopping counter: {early_stop_counter}/{early_stop_patience}")
 
-                    if early_stop_counter >= early_stop_patience:
-                        print(f"\n 验证集 loss 连续 {early_stop_patience} 个 epoch 未下降，提前停止训练")
-                        break
+                if early_stop_counter >= early_stop_patience:
+                    print(f"\n 验证集 loss 连续 {early_stop_patience} 个 epoch 未下降，提前停止训练")
+                    break
             current_lr = optim.param_groups[0]['lr']
             if current_lr < 1.1e-6 and early_stop_counter >= 3:
                 print(f"\nSTOP: 学习率已降至最低 ({current_lr}) 且 Loss 无提升，提前结束。")

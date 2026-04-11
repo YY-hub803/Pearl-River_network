@@ -23,7 +23,7 @@ def to_scalar(value):
     return value
 
 
-def preprocess_dynamic_data(data, train_end, log_indices=None):
+def preprocess_dynamic_data(data, train_end,val_end, log_indices=None):
     """
     处理动态数据 (X, Y)
     切分 Train/Val
@@ -39,8 +39,8 @@ def preprocess_dynamic_data(data, train_end, log_indices=None):
 
     # 2. Split
     train_data = data_processed[:, :train_end, :]
-    val_data = data_processed[:, train_end:, :]
-
+    val_data = data_processed[:, train_end:train_end + val_end , :]
+    test_data = data_processed[:, train_end + val_end:, :]
     # 3. Fit Standard Scaler (Global: across sites and time)
     # 计算 Mean/Std: 形状为 [1, 1, F]
     mean = np.nanmean(train_data, axis=(0, 1), keepdims=True)
@@ -51,8 +51,8 @@ def preprocess_dynamic_data(data, train_end, log_indices=None):
 
     train_norm = (train_data - mean) / std
     val_norm = (val_data - mean) / std
-
-    return train_norm, val_norm, mean, std
+    test_norm = (test_data - mean) / std
+    return train_norm, val_norm,test_norm, mean, std
 
 def preprocess_static_data(data, num_time_steps, log_indices=None):
 

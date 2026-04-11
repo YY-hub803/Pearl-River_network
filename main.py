@@ -31,7 +31,7 @@ if torch.cuda.is_available():
 
 
 hyper_params = {
-    "epoch_run": 150,
+    "epoch_run": 400,
     "epoch_save": 10,
     "hidden_size": 32,
     'history_len': 7,
@@ -63,25 +63,20 @@ Loss_FACTORY = {
 
 
 freq = '1D'
-dir_model = freq+'_' + "%s_H%d_L%d_dr%.2f_NL%d_E%d" % (
+dir_model = "%s_B%d_H%d_L%d_P%d_dr%.2f_lr%.4f" % (
     hyper_params['BACKEND'],
+    hyper_params['batch_size'],
     hyper_params['hidden_size'],
     hyper_params['history_len'],
+    hyper_params['pred_len'],
     hyper_params['drop_rate'],
-    hyper_params["num_layers"],
-    hyper_params['epoch_run'],
+    hyper_params['base_lr'],
 )
 # set input and output folders
 dir_proj = f"data"
 work_path = os.getcwd()
 dir_input = os.path.join(work_path, dir_proj)
-if hyper_params['pred_len'] == 1 :
-    dir_output = os.path.join("OutPut",dir_model)
-elif hyper_params['pred_len'] == 3 :
-    dir_output = os.path.join("Mutil_OutPut",dir_model)
-elif hyper_params['pred_len'] == 7 :
-    dir_output = os.path.join("Mutil7_OutPut",dir_model)
-
+dir_output = os.path.join("OutPut",dir_model)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -98,11 +93,13 @@ full_date_range = pd.date_range(start=start_date, end=end_date, freq=freq)
 date_length = len(full_date_range)
 
 print("---------------------划分窗格及数据集---------------------")
-train_rate = 0.7
-val_rate = 0.3
-train_end = int(date_length * train_rate) # 划分点
-val_date_range = full_date_range[train_end:,]
-# train_end = date_length # 划分点
+train_ratio = 0.6
+val_ratio = 0.2
+train_end = int(date_length * train_ratio) # 划分点
+val_end = int(date_length * val_ratio)
+val_date_range = full_date_range[train_end:train_end + val_end,]
+test_date_range = full_date_range[train_end + val_end:,]
+
 
 #------------------------------------- load data -----------------------------------------------------------------------
 print("------------------------ load path ------------------------------")
@@ -110,11 +107,12 @@ dir_x = {
     "x_pet": os.path.join(dir_input, 'input_xforce_pet.csv'),
     "x_temp": os.path.join(dir_input, 'input_xforce_temp.csv'),
     "x_vp": os.path.join(dir_input, 'input_xforce_vp.csv'),
-    "x_TEMP": os.path.join(dir_input, 'input_yobs_temp.csv'),
+    # "x_TEMP": os.path.join(dir_input, 'input_yobs_temp.csv'),
     "x_tp": os.path.join(dir_input, 'input_yobs_Tp.csv'),
-    "x_tn": os.path.join(dir_input, 'input_yobs_TN.csv'),
+    # "x_tn": os.path.join(dir_input, 'input_yobs_TN.csv'),
     "x_cod": os.path.join(dir_input, 'input_yobs_CODMn.csv'),
     "x_do": os.path.join(dir_input, 'input_yobs_DO.csv'),
+    # "x_nhn": os.path.join(dir_input, 'input_yobs_NH-N.csv'),
     "x_pre": os.path.join(dir_input, 'input_xforce_prcp.csv'),
 
 }
@@ -125,7 +123,7 @@ dir_c = {
 
 dir_y = {
     "TP": os.path.join(dir_input, 'input_yobs_Tp.csv'),
-    "TN": os.path.join(dir_input, 'input_yobs_TN.csv')
+    "DO": os.path.join(dir_input, 'input_yobs_DO.csv')
 }
 
 edge_path = os.path.join(dir_input, 'edge_weight.csv')
@@ -159,25 +157,30 @@ date_array = date_processing.values
 date_array_expanded = np.expand_dims(date_array, axis=0)
 date_emb = np.repeat(date_array_expanded, num_sites, axis=0)
 train_date = date_emb[:, :train_end, :]
-val_date  = date_emb[:, train_end:, :]
+val_date  = date_emb[:, train_end:train_end + val_end, :]
+test_date = date_emb[:, train_end + val_end:, :]
 
 c_long = General_utils.preprocess_static_data(c, date_length, log_indices=None)
 train_c = c_long[:, :train_end, :]
-val_c   = c_long[:, train_end:, :]
-
+val_c   = c_long[:, train_end:train_end + val_end, :]
+test_c = c_long[:, train_end + val_end:, :]
 # list(range(x.shape[2]))
-train_x, val_x, x_mean, x_std = General_utils.preprocess_dynamic_data(
-    x, train_end, log_indices=list(range(x.shape[2]))
+train_x, val_x,test_x, x_mean, x_std = General_utils.preprocess_dynamic_data(
+    x, train_end,val_end, log_indices=list(range(x.shape[2]))
 )
 
 train_x = np.nan_to_num(train_x, nan=0.0)
 val_x = np.nan_to_num(val_x, nan=0.0)
+test_x = np.nan_to_num(test_x, nan=0.0)
 
-train_x = np.concatenate([train_x, train_c], axis=2)
-val_x   = np.concatenate([val_x, val_c], axis=2)
-
-train_y, val_y, y_mean, y_std = General_utils.preprocess_dynamic_data(
-    y, train_end, log_indices=list(range(y.shape[2]))
+# train_x = np.concatenate([train_x,train_date], axis=2)
+# val_x   = np.concatenate([val_x,val_date], axis=2)
+# test_x = np.concatenate([test_x,test_date], axis=2)
+train_x = np.concatenate([train_x, train_c,train_date], axis=2)
+val_x   = np.concatenate([val_x, val_c,val_date], axis=2)
+test_x = np.concatenate([test_x, test_c,test_date], axis=2)
+train_y, val_y,test_y, y_mean, y_std = General_utils.preprocess_dynamic_data(
+    y, train_end, val_end,log_indices=list(range(y.shape[2]))
 )
 print(f"  Train Data Shapes: X{train_x.shape}, Y{train_y.shape}")
 print(f"  Val Data Shapes:   X{val_x.shape}, Y{val_y.shape}")
@@ -198,6 +201,8 @@ print("Train Set:")
 train_valid_indices = General_utils.get_valid_window_indices(train_y, hyper_params['history_len'],hyper_params['pred_len'])
 print("Val Set:")
 val_valid_indices = General_utils.get_valid_window_indices(val_y, hyper_params['history_len'],hyper_params['pred_len'])
+print("Test Set:")
+test_valid_indices = General_utils.get_valid_window_indices(test_y, hyper_params['history_len'],hyper_params['pred_len'])
 
 print('  ------------------------ DataLoader ------------------------------')
 Train,A_list = General_utils.prepare_dataloader(
@@ -211,6 +216,14 @@ Train,A_list = General_utils.prepare_dataloader(
 Val,_ = General_utils.prepare_dataloader(
     val_x, val_y,
     val_valid_indices,
+    hyper_params['history_len'],
+    hyper_params['pred_len'],
+    hyper_params['batch_size'],
+    lag_matrix, max_lag,
+    shuffle=False)
+Test,_ = General_utils.prepare_dataloader(
+    test_x, test_y,
+    test_valid_indices,
     hyper_params['history_len'],
     hyper_params['pred_len'],
     hyper_params['batch_size'],
@@ -271,26 +284,24 @@ latest_model_path = max(model_files, key=os.path.getmtime)
 
 print(f">>> 加载原始模型进行插补: {latest_model_path}")
 model_raw = torch.load(latest_model_path)
-x_in = np.concatenate([train_x, val_x], axis=1)
-y_in = np.concatenate([train_y, val_y], axis=1)
 Target_Name = list(dir_y.keys())
 y_out, y_true = train.Prediction(
-    model_raw, val_x, val_y,A_list,
+    model_raw, test_x, test_y,A_list,
     y_mean, y_std, sites_ID, dir_output, Target_Name,device,
     hyper_params['history_len'],hyper_params['pred_len'],hyper_params['batch_size']
 )
 
-# ------------------------ 可视化部分 ------------------------------
-if 'y_out' in locals():
-    print("------------------------ 生成可视化图表 ------------------------------")
-    vis_mapping = {
-        "TN": lambda: vis.vis_filled(y_true['TN'], y_out['TN'], val_date_range, vis_folder, "TN"),
-        "TP": lambda: vis.vis_filled(y_true['TP'], y_out['TP'], val_date_range, vis_folder, "TP")
-    }
-    for var_name, vis_func in vis_mapping.items():
-        if var_name in Target_Name:
-            vis_func()  # 执行对应变量的可视化函数
-            print(f"已执行 {var_name} 的可视化，保存至 {vis_folder}")
+# # ------------------------ 可视化部分 ------------------------------
+# if 'y_out' in locals():
+#     print("------------------------ 生成可视化图表 ------------------------------")
+#     vis_mapping = {
+#         "DO": lambda: vis.vis_filled(y_true['DO'], y_out['DO'], val_date_range, vis_folder, "DO"),
+#         "TP": lambda: vis.vis_filled(y_true['TP'], y_out['TP'], val_date_range, vis_folder, "TP")
+#     }
+#     for var_name, vis_func in vis_mapping.items():
+#         if var_name in Target_Name:
+#             vis_func()  # 执行对应变量的可视化函数
+#             print(f"已执行 {var_name} 的可视化，保存至 {vis_folder}")
 
 
 

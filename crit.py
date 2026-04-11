@@ -145,7 +145,7 @@ class MixLoss(nn.Module):
 
 
 class WeightLoss(nn.Module):
-    def __init__(self, w_q=1.0, w_c=10.0):
+    def __init__(self, w_q=5.0, w_c=1.0):
         """
         多任务损失函数：同时优化流量(Q)和浓度(C)
         Args:
