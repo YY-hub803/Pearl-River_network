@@ -2,8 +2,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from PIL.XbmImagePlugin import xbm_head
 from torch_geometric.utils import to_dense_adj
-
+from torch_geometric.nn import GCNConv
+from torch_geometric.data import Batch, Data
 
 class LSTMModel(nn.Module):
     def __init__(self, nx,ny,hidden_size,num_layer,pred_len, drop_rate):
@@ -13,84 +15,70 @@ class LSTMModel(nn.Module):
         self.hidden_size=hidden_size
         self.pred_len = pred_len
         self.drop = nn.Dropout(drop_rate)
+        self.fc = nn.Linear(nx, hidden_size)
         self.lstm = nn.LSTM(self.nx, self.hidden_size,num_layers=num_layer, batch_first=True, bidirectional=False)
-        self.dense = nn.Linear(self.hidden_size, self.pred_len*self.ny)
+        self.dense = nn.Linear(self.hidden_size*2, self.pred_len*self.ny)
     def forward(self, x):
         B, N, T, _ = x.shape
         x_in = x.reshape(B * N, T, -1)
+        x_h = self.fc(x_in)
         lstm_out,_ = self.lstm(x_in)
-        mlp_out = self.dense(lstm_out[:,-1,:])
-
+        h = torch.concat((lstm_out, x_h), dim=-1)
+        mlp_out = self.dense(h[:,-1,:])
         return mlp_out.reshape(B, N, self.pred_len, self.ny)
 
 
+#-----------------------------------------------------------------------------------------------------------------------
+class GCNBlock(nn.Module):
+    def __init__(self, input_size, hidden_size, edge_index):
+        super().__init__()
+        self.edge_index = edge_index.to('cuda')
+        self.conv = GCNConv(input_size, hidden_size)
+        self.lstm = nn.LSTM(hidden_size, hidden_size,num_layers=2, batch_first=True)
+    def forward(self, x):
+        # x: [B, T, N, F]
+        B, T, N, nF = x.shape
+        data_list = []
+        for b in range(B):
+            for t in range(T):
+                data = Data(x=x[b, t], edge_index=self.edge_index)
+                data_list.append(data)
+        batch = Batch.from_data_list(data_list)
+        gcn_out = self.conv(batch.x, batch.edge_index)
+        gcn_out = gcn_out.view(B, T, N, -1)
+        gcn_trans = gcn_out.permute(0, 2, 1, 3)     #x: [B, N, T,F]
+        h_gcn = gcn_trans.reshape(B*N, T,-1)
+        out,_ = self.lstm(h_gcn)
+        return F.gelu(out).reshape(B,N,T,-1)
+
+
 class STGNNModel(nn.Module):
-    def __init__(self, nx, ny, num_nodes, edge_index, hidden_size, num_layer, pred_len, drop_rate, device):
+    def __init__(self, nx, ny, edge_index, hidden_size, num_layer, pred_len, drop_rate, device):
         super(STGNNModel, self).__init__()
         self.nx = nx
         self.ny = ny
-        self.num_nodes = num_nodes
         self.hidden_size = hidden_size
         self.pred_len = pred_len
         self.drop = nn.Dropout(drop_rate)
-
-        # 将稀疏的 edge_index 转换为稠密矩阵 [N, N]
-        adj = to_dense_adj(edge_index, max_num_nodes=num_nodes)[0].to(device)
-
-        # 增加自环 (保证节点保留自身信息)
-        adj = adj + torch.eye(num_nodes, device=device)
-        adj = (adj > 0).float()
-
-        # 传统 GCN 的对称归一化: D^{-1} A
-        deg = adj.sum(dim=1)
-        deg_inv = deg.pow(-1)
-        deg_inv[deg_inv == float('inf')] = 0
-        norm_adj = deg_inv.view(-1, 1) * adj
-
-        self.register_buffer('norm_adj', norm_adj)
-
-        # ==========================================
-        # 2. 网络层定义
-        # ==========================================
-        # GCN 权重层
-        self.W_gcn1 = nn.Linear(nx, hidden_size)
-        # LSTM 时序层
+        self.fc = nn.Linear(self.nx, self.hidden_size)
+        self.GCNBlock = GCNBlock(self.nx, hidden_size, edge_index)
         self.lstm = nn.LSTM(nx, hidden_size, num_layers=num_layer, batch_first=True)
-        self.lstm_g = nn.LSTM(hidden_size, hidden_size, num_layers=num_layer, batch_first=True)
-        # 多步预测全连接层 (直接输出 pred_len * ny)
-        self.dense = nn.Linear(self.hidden_size*2, self.pred_len*self.ny)
+        self.dense = nn.Linear(self.hidden_size*3, self.pred_len*self.ny)
 
     def forward(self, x):
         # x: [B, N, T, F]
         B, N, T, nF = x.shape
-
-        # 将时间维度 T 提到前面，方便并行对每个时间步做图卷积 -> [B, T, N, F]
+        x_h = self.fc(x)
         x_trans = x.permute(0, 2, 1, 3)
-
-        # --- 阶段一: 空间特征提取 (GCN) ---
-        h1 = self.W_gcn1(x_trans)
-        # 使用 einsum 快速完成矩阵乘法: norm_adj[N, N] * h1[B, T, N, H] -> [B, T, N, H]
-        h1 = torch.einsum('ij,btjf->btif', self.norm_adj, h1)
-        h1 = F.gelu(h1)
-
-        # 还原维度为 [B, N, T, H]
-        gcn_out = h1.permute(0, 2, 1, 3)
-        h_gcn = gcn_out.reshape(B*N, T,-1)
-        h_out,_ = self.lstm_g(h_gcn)
-        ST_out = h_out.reshape(B, N, T, -1)
-        # --- 阶段二: 时间序列建模 (LSTM) ---
-        # 拉平进行独立站点 LSTM 推演: [B*N, T, H]
+        ST_out = self.GCNBlock(x_trans)
         lstm_in = x.reshape(B * N, T, -1)
         last_state, _ = self.lstm(lstm_in)
-
-        # 截取最后一个时间步的状态: [B*N, H]
         lstm_out = last_state.reshape(B,N,T,-1)
-        h = torch.cat((lstm_out, ST_out), dim=-1)  # h  ---> [B,N,T,H*2]
-        # --- 阶段三: 多步解码 ---
+        h = torch.cat((lstm_out, ST_out,x_h), dim=-1)  # h  ---> [B,N,T,H*2]
         out = self.dense(h[:, :, -1, :])  # [B,N, pred_len * ny]
-        # 还原为您需要的输出维度
         return out.reshape(B, N, self.pred_len, self.ny)
 
+#-----------------------------------------------------------------------------------------------------------------------
 # ==========================================
 # 核心层：物理启发的滞后图卷积 (Physics-Guided GCN)
 # ==========================================
@@ -199,12 +187,10 @@ class TFTDecoderHead(nn.Module):
             dropout=dropout)
         self.attn_layer_norm = nn.LayerNorm(hidden_size)
 
-        # 3. 预测步长的位置编码 (生成未来 pred_len 步的 Query)
-        # 这里用一组可学习的参数来代表未来时间的 Query
         self.future_queries = nn.Parameter(torch.randn(1, 1, pred_len, hidden_size))
-        # 4. 最终输出的 GRN
+
         self.output_grn = GRN(hidden_size, hidden_size, dropout)
-        # 5. 映射到预测值
+
         self.final_proj = nn.Linear(hidden_size, out_dim)
 
     def forward(self, st_features):
@@ -212,18 +198,17 @@ class TFTDecoderHead(nn.Module):
         B, N, T, H = st_features.shape
         # 将 N 和 B 合并以适配 Attention 输入 [B*N, T, H]
         x = st_features.reshape(B * N, T, H)
-        # 经过 GRN 提纯
+
         v = self.historical_grn(x)  # Value & Key
-        # 扩展 future queries 以匹配 Batch * Nodes
+
         q = self.future_queries.expand(B * N, -1, -1, -1).reshape(B * N, self.pred_len, H)
         # Multi-Head Attention: Q=未来预测步, K=V=历史序列
-        # 注意力机制会决定未来每一步分别需要重点关注历史的哪些时刻
         attn_out, attn_weights = self.attention(q, v, v)
-        # 残差连接与归一化
+
         attn_out = self.attn_layer_norm(attn_out + q)
-        # 通过输出 GRN
+
         out = self.output_grn(attn_out)
-        # 映射到最终维度 [B*N, pred_len, out_dim]
+
         out = self.final_proj(out)
         return out.reshape(B, N, self.pred_len, self.out_dim)
 

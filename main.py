@@ -41,7 +41,7 @@ hyper_params = {
     "drop_rate": 0.3,
     "warmup_epochs":10,
     "base_lr":1e-3,
-    "BACKEND":"LSTMModel", # select model    STGNNModel/ LSTMModel/PhysicsSTGNN/AttPhysicsSTGNN
+    "BACKEND":"LSTMModel", # select model    STGNNModel/ LSTMModel/PhysicsSTGNN/
     "lossFun":'RMSE'
 }
 
@@ -57,7 +57,6 @@ Loss_FACTORY = {
     "RMSE": crit.RMSELoss,
     "MixLoss": crit.MixLoss,
     "WeightLoss":crit.WeightLoss
-
 }
 
 
@@ -84,8 +83,6 @@ BACKEND= hyper_params["BACKEND"]
 
 num_sites = 24 # 29
 D_R = pd.read_csv(os.path.join(dir_input, 'D_R.csv'))
-# os.path.join(dir_input, 'D_R_4h.csv').split('\\')[-1] ------> 'D_R_4h.csv'
-# os.path.join(dir_input, 'D_R_4h.csv').split('\\')[-1].split('_')[-1]-----> '4h.csv'
 # freq----> "4h"
 start_date = D_R['start'].min()
 end_date = D_R['end'].max()
@@ -160,13 +157,13 @@ train_date = date_emb[:, :train_end, :]
 val_date  = date_emb[:, train_end:train_end + val_end, :]
 test_date = date_emb[:, train_end + val_end:, :]
 
-c_long = General_utils.preprocess_static_data(c, date_length, log_indices=None)
+c_long = General_utils.preprocess_static_data(c, date_length)
 train_c = c_long[:, :train_end, :]
 val_c   = c_long[:, train_end:train_end + val_end, :]
 test_c = c_long[:, train_end + val_end:, :]
 # list(range(x.shape[2]))
 train_x, val_x,test_x, x_mean, x_std = General_utils.preprocess_dynamic_data(
-    x, train_end,val_end, log_indices=list(range(x.shape[2]))
+    x, train_end,val_end
 )
 
 train_x = np.nan_to_num(train_x, nan=0.0)
@@ -180,7 +177,7 @@ train_x = np.concatenate([train_x, train_c,train_date], axis=2)
 val_x   = np.concatenate([val_x, val_c,val_date], axis=2)
 test_x = np.concatenate([test_x, test_c,test_date], axis=2)
 train_y, val_y,test_y, y_mean, y_std = General_utils.preprocess_dynamic_data(
-    y, train_end, val_end,log_indices=list(range(y.shape[2]))
+    y, train_end, val_end
 )
 print(f"  Train Data Shapes: X{train_x.shape}, Y{train_y.shape}")
 print(f"  Val Data Shapes:   X{val_x.shape}, Y{val_y.shape}")
@@ -243,7 +240,7 @@ if BACKEND in ("LSTMModel"):
     )
 elif BACKEND in ("STGNNModel"):
     model = MODEL_FACTORY[BACKEND](
-        nx, ny,num_sites,edge,
+        nx, ny,edge,
         hyper_params['hidden_size'],
         hyper_params['num_layers'],
         hyper_params['pred_len'],
@@ -291,17 +288,17 @@ y_out, y_true = train.Prediction(
     hyper_params['history_len'],hyper_params['pred_len'],hyper_params['batch_size']
 )
 
-# # ------------------------ 可视化部分 ------------------------------
-# if 'y_out' in locals():
-#     print("------------------------ 生成可视化图表 ------------------------------")
-#     vis_mapping = {
-#         "DO": lambda: vis.vis_filled(y_true['DO'], y_out['DO'], val_date_range, vis_folder, "DO"),
-#         "TP": lambda: vis.vis_filled(y_true['TP'], y_out['TP'], val_date_range, vis_folder, "TP")
-#     }
-#     for var_name, vis_func in vis_mapping.items():
-#         if var_name in Target_Name:
-#             vis_func()  # 执行对应变量的可视化函数
-#             print(f"已执行 {var_name} 的可视化，保存至 {vis_folder}")
+# ------------------------ 可视化部分 ------------------------------
+if 'y_out' in locals():
+    print("------------------------ 生成可视化图表 ------------------------------")
+    vis_mapping = {
+        "DO": lambda: vis.vis_filled(y_true['DO'], y_out['DO'], test_date_range, vis_folder, "DO"),
+        "TP": lambda: vis.vis_filled(y_true['TP'], y_out['TP'], test_date_range, vis_folder, "TP")
+    }
+    for var_name, vis_func in vis_mapping.items():
+        if var_name in Target_Name:
+            vis_func()  # 执行对应变量的可视化函数
+            print(f"已执行 {var_name} 的可视化，保存至 {vis_folder}")
 
 
 

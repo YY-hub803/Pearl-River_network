@@ -83,14 +83,9 @@ def Time_emb(full_date_range):
 
     date_processing = pd.DataFrame(index=full_date_range)
 
-    # --- 1. 长期趋势 (Long-term Trend / Latent Variable) ---
-    # 计算十进制年份，捕捉年代际的人类活动演变
-    year = date_processing.index.year
+
     day_of_year = date_processing.index.dayofyear
     days_in_year = np.where(date_processing.index.is_leap_year, 366, 365)
-    decimal_year = year + (day_of_year - 1) / days_in_year
-    # 必须进行 Z-score 标准化，否则递增的年份数值过大会导致神经网络梯度不稳定
-    date_processing['time_longterm'] = (decimal_year - np.mean(decimal_year)) / np.std(decimal_year)
 
     # --- 2. 年内周期 (Seasonality) ---
     date_processing['sin_doy'] = np.sin(2 * np.pi * day_of_year / days_in_year)

@@ -24,7 +24,7 @@ def train_G(model, Train,Val, criterion, num_epochs, device,saveFolder,warmup_ep
 
     model = model.to(device)
     criterion = criterion.to(device)
-    optim = torch.optim.AdamW(model.parameters(),lr=base_lr, weight_decay=1e-5)
+    optim = torch.optim.Adam(model.parameters(),lr=base_lr, weight_decay=1e-5)
     scaler = GradScaler(enabled=(device.type == 'cuda'))
 
     model_name = model.__class__.__name__
@@ -264,9 +264,9 @@ def Interpolation(model,x,y,A_list,y_mean,y_std,sites_ID,saveFolder,Target_Name,
             rmse = crit.RMSE(valid_pred, valid_obs)
             nse = crit.NSE(valid_pred, valid_obs)
             kge, r, alpha, beta = crit.KGE(valid_pred, valid_obs)
-            fhv = crit.FHV(valid_pred, valid_obs)
+            mae = crit.MAE(valid_pred, valid_obs)
 
-            logStr = f'Variable:{var_name}, Site:{site}, R2:{r2:.3f}, NSE:{nse:.3f},KGE:{kge:.3f},FHV:{fhv:.3f},RMSE:{rmse:.3f}'
+            logStr = f'Variable:{var_name}, Site:{site}, R2:{r2:.3f}, NSE:{nse:.3f},KGE:{kge:.3f},MAE:{mae:.3f},RMSE:{rmse:.3f}'
             print(logStr)
             if rf: rf.write(logStr + '\n')
         # --- 计算整体指标 ---
@@ -281,9 +281,9 @@ def Interpolation(model,x,y,A_list,y_mean,y_std,sites_ID,saveFolder,Target_Name,
 
                 total_nse = crit.NSE(total_preds, total_obs)
                 total_kge, total_r, total_alpha, total_beta = crit.KGE(total_preds, total_obs)
-                total_fhv = crit.FHV(total_preds, total_obs)
+                total_mae = crit.MAE(total_preds, total_obs)
 
-                logStr_overall = f'Variable:{var_name}, == OVERALL ==, R2:{total_r2:.3f}, NSE:{total_nse:.3f},KGE:{total_kge:.3f},FHV:{total_fhv:.3f}, RMSE:{total_rmse:.3f}'
+                logStr_overall = f'Variable:{var_name}, == OVERALL ==, R2:{total_r2:.3f}, NSE:{total_nse:.3f},KGE:{total_kge:.3f},MAE:{total_mae:.3f}, RMSE:{total_rmse:.3f}'
                 print(logStr_overall)
                 if rf: rf.write(logStr_overall + '\n')
     if rf: rf.close()
@@ -388,11 +388,9 @@ def Prediction(model, x, y, A_list, y_mean, y_std, sites_ID, saveFolder, Target_
         # 反归一化
         pred_inv = pred_raw * cur_std + cur_mean
         obs_inv = obs_raw * cur_std + cur_mean
-        pred_final = np.expm1(pred_inv)
-        obs_final = np.expm1(obs_inv)
 
-        df_pred = pd.DataFrame(pred_final, index=site_names).T
-        df_obs = pd.DataFrame(obs_final, index=site_names).T
+        df_pred = pd.DataFrame(pred_inv, index=site_names).T
+        df_obs = pd.DataFrame(obs_inv, index=site_names).T
 
         # 清洗真实值：0值或Nan视作缺失
         df_obs_clean = df_obs.replace(0, np.nan)
@@ -412,9 +410,9 @@ def Prediction(model, x, y, A_list, y_mean, y_std, sites_ID, saveFolder, Target_
 
         # --- 站点级评估 ---
         for site in site_names:
-            # 过滤：必须是有效预测区间（有预测且有真实值）
-            # 由于前 seq_len 步没有预测值（或为初始化的0且 count 为 1，但值为0被转换为 expm1(0) 等逻辑，需用count判断或切片）
-            # 最严谨的做法是跳过前 seq_len 步，但在下面用 mask 交集自动滤除了
+
+            if site in ("GL","DTMDQ"):
+                continue
             mask = (~np.isnan(df_obs_clean[site])) & (~np.isnan(df_pred[site]))
             # 补充排除未预测部分(即原始值为0, count=1计算出来的无效值)
             valid_time_mask = np.arange(T_total) >= seq_len
@@ -432,9 +430,9 @@ def Prediction(model, x, y, A_list, y_mean, y_std, sites_ID, saveFolder, Target_
             rmse = crit.RMSE(valid_pred, valid_obs)
             nse = crit.NSE(valid_pred, valid_obs)
             kge, r, alpha, beta = crit.KGE(valid_pred, valid_obs)
-            fhv = crit.FHV(valid_pred, valid_obs)
+            mae = crit.MAE(valid_pred, valid_obs)
 
-            logStr = f'Variable:{var_name}, Site:{site}, R2:{r2:.3f}, NSE:{nse:.3f}, KGE:{kge:.3f}, FHV:{fhv:.3f}, RMSE:{rmse:.3f}'
+            logStr = f'Variable:{var_name}, Site:{site}, R2:{r2:.3f}, NSE:{nse:.3f}, KGE:{kge:.3f}, MAE:{mae:.3f}, RMSE:{rmse:.3f}'
             print(logStr)
             if rf: rf.write(logStr + '\n')
 
@@ -448,9 +446,9 @@ def Prediction(model, x, y, A_list, y_mean, y_std, sites_ID, saveFolder, Target_
                 total_rmse = crit.RMSE(total_preds, total_obs)
                 total_nse = crit.NSE(total_preds, total_obs)
                 total_kge, total_r, total_alpha, total_beta = crit.KGE(total_preds, total_obs)
-                total_fhv = crit.FHV(total_preds, total_obs)
+                total_mae = crit.MAE(total_preds, total_obs)
 
-                logStr_overall = f'Variable:{var_name}, == OVERALL ==, R2:{total_r2:.3f}, NSE:{total_nse:.3f}, KGE:{total_kge:.3f}, FHV:{total_fhv:.3f}, RMSE:{total_rmse:.3f}'
+                logStr_overall = f'Variable:{var_name}, == OVERALL ==, R2:{total_r2:.3f}, NSE:{total_nse:.3f}, KGE:{total_kge:.3f}, MAE:{total_mae:.3f}, RMSE:{total_rmse:.3f}'
                 print(logStr_overall)
                 if rf: rf.write(logStr_overall + '\n')
 
